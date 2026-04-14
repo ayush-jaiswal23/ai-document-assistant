@@ -490,8 +490,13 @@
 
 .chat-panel {
   display: grid;
+  /* grid-template-rows: auto 1fr auto; */
   grid-template-rows: auto 1fr auto;
-  min-height: 72vh;
+  height: 110vh; 
+  max-height: 800px;
+  overflow: hidden;
+  position: relative;
+  /* min-height: 72vh; */
 }
 
 .chat-header {
@@ -504,10 +509,12 @@
 
 .message-stream {
   min-height: 20rem;
-  overflow: auto;
-  display: grid;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   gap: 0.9rem;
-  padding-right: 0.3rem;
+  padding: 1rem 0.5rem;
+  height: 100%;
 }
 
 .message-card {
@@ -539,6 +546,9 @@
 
 .composer {
   margin-top: 1rem;
+  background: white; 
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(23, 58, 52, 0.05);
 }
 
 .composer textarea {
