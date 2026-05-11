@@ -1,7 +1,7 @@
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(280px, 420px) 1fr;
+  grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
   background:
     radial-gradient(circle at top left, rgba(255, 180, 88, 0.3), transparent 30%),
     radial-gradient(circle at bottom right, rgba(16, 112, 105, 0.24), transparent 28%),
@@ -148,6 +148,7 @@
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-width: 0;
 }
 
 .topbar {
@@ -242,16 +243,18 @@
 
 .chat-layout {
   display: grid;
-  grid-template-columns: minmax(290px, 360px) 1fr;
+  grid-template-columns: 360px minmax(0, 1fr);
   gap: 1rem;
   min-height: 0;
   flex: 1;
+  min-width: 0;
 }
 
 .sidebar-stack {
   display: grid;
   gap: 1rem;
   align-content: start;
+  min-width: 0;
 }
 
 .panel {
@@ -259,6 +262,8 @@
   padding: 1.4rem;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(23, 58, 52, 0.08);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .section-heading {
@@ -279,6 +284,8 @@
 .upload-form,
 .composer,
 .group-list,
+.document-list,
+.selected-files,
 .doc-preview,
 .doc-meta {
   display: grid;
@@ -311,6 +318,26 @@
   box-sizing: border-box;
 }
 
+.password-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.password-control input {
+  min-width: 0;
+}
+
+.password-toggle {
+  border: 1px solid rgba(23, 58, 52, 0.16);
+  border-radius: 1rem;
+  padding: 0 0.85rem;
+  background: rgba(16, 112, 105, 0.1);
+  color: #31554d;
+  cursor: pointer;
+  font: inherit;
+}
+
 .field input:focus,
 .field textarea:focus {
   outline: 2px solid rgba(16, 112, 105, 0.28);
@@ -337,6 +364,31 @@
   gap: 0.75rem;
 }
 
+.member-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.member-card {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: rgba(248, 245, 238, 0.88);
+}
+
+.member-card strong,
+.member-card span,
+.member-card small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.member-card span,
+.member-card small {
+  color: #60726c;
+}
+
 .checkbox-card {
   display: flex;
   align-items: center;
@@ -357,6 +409,19 @@
 .file-field input {
   padding: 0.75rem;
   background: transparent;
+}
+
+.selected-files {
+  gap: 0.5rem;
+}
+
+.selected-files span {
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.8rem;
+  background: rgba(16, 112, 105, 0.1);
+  color: #31554d;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .ghost-button:hover,
@@ -395,10 +460,22 @@
 
 .group-item {
   width: 100%;
+  min-width: 0;
   text-align: left;
   border-radius: 1.2rem;
   padding: 1rem;
   background: rgba(248, 245, 238, 0.88);
+}
+
+.group-item strong,
+.group-item small,
+.doc-preview h3,
+.doc-preview p,
+.doc-preview dd,
+.message-card p,
+.composer-footer span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .group-item.active {
@@ -412,7 +489,9 @@
 }
 
 .doc-meta {
-  grid-template-columns: repeat(2, minmax(0, max-content));
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .pill,
@@ -456,6 +535,7 @@
   padding: 1rem;
   border-radius: 1.2rem;
   background: rgba(245, 239, 225, 0.7);
+  min-width: 0;
 }
 
 .doc-preview dl {
@@ -496,6 +576,7 @@
   max-height: 800px;
   overflow: hidden;
   position: relative;
+  min-width: 0;
   /* min-height: 72vh; */
 }
 
@@ -505,6 +586,11 @@
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
+  min-width: 0;
+}
+
+.chat-header h2 {
+  overflow-wrap: anywhere;
 }
 
 .message-stream {
@@ -515,12 +601,14 @@
   gap: 0.9rem;
   padding: 1rem 0.5rem;
   height: 100%;
+  min-width: 0;
 }
 
 .message-card {
   border-radius: 1.4rem;
   padding: 1rem 1.05rem;
   background: #f8f5ee;
+  min-width: 0;
 }
 
 .message-card header {

@@ -1,6 +1,8 @@
 from django.contrib.auth import login
 from django.contrib.auth import get_user_model
 from django.db.models import Prefetch
+from pathlib import Path
+from uuid import uuid4
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -19,6 +21,7 @@ from .services import (
 )
 from .serializers import (
     AdminSignupSerializer,
+    AdminMemberSerializer,
     ChatMessageSerializer,
     ChatRequestSerializer,
     DocumentUploadSerializer,
@@ -133,7 +136,12 @@ class GroupListView(generics.ListAPIView):
         memberships = (
             GroupMembership.objects.filter(user=self.request.user)
             .select_related('group')
-            .select_related('group__document', 'group__document__uploaded_by')
+            .prefetch_related(
+                Prefetch(
+                    'group__documents',
+                    queryset=GroupDocument.objects.select_related('uploaded_by').order_by('-updated_at'),
+                )
+            )
         )
 
         groups = []
@@ -143,7 +151,7 @@ class GroupListView(generics.ListAPIView):
         return groups
 
 
-# Returns one group's messages and document context because chat needs a full scoped workspace snapshot.
+# Returns one group's messages and documents because chat needs a full scoped workspace snapshot.
 class GroupDetailView(generics.RetrieveAPIView):
     serializer_class = GroupDetailSerializer
     lookup_url_kwarg = 'group_id'
@@ -154,18 +162,18 @@ class GroupDetailView(generics.RetrieveAPIView):
         group = (
             Group.objects.filter(pk=membership.group_id)
             .prefetch_related(
-                Prefetch('messages', queryset=ChatMessage.objects.order_by('created_at', 'id'))
+                Prefetch('messages', queryset=ChatMessage.objects.order_by('created_at', 'id')),
+                Prefetch('documents', queryset=GroupDocument.objects.select_related('uploaded_by').order_by('-updated_at')),
             )
-            .select_related('document', 'document__uploaded_by')
             .get()
         )
         group.role = membership.role
         return group
 
 
-# Handles source uploads because admins need a single endpoint to replace and re-index the active group document.
+# Handles source uploads because admins need a single endpoint to add indexed files to the group knowledge base.
 class GroupDocumentUploadView(APIView):
-    # Extracts text, upserts the document row, indexes it in Chroma, and returns the refreshed chat context.
+    # Extracts each selected file, creates document rows, indexes them in Chroma, and returns the refreshed chat context.
     def post(self, request, group_id):
         membership = get_membership_or_403(request.user, group_id)
         if membership.role != GroupMembership.Role.ADMIN:
@@ -173,71 +181,87 @@ class GroupDocumentUploadView(APIView):
 
         serializer = DocumentUploadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        uploaded_file = serializer.validated_data['file']
-        extracted_text = extract_text_from_upload(uploaded_file)
-        document, created = GroupDocument.objects.get_or_create(
-            group_id=group_id,
-            defaults={
-                'title': serializer.validated_data.get('title') or uploaded_file.name,
-                'description': serializer.validated_data.get('description', ''),
-                'file': uploaded_file,
-                'extracted_text': extracted_text,
-                'embedding_model': EMBEDDING_MODEL_NAME,
-                'vector_store_backend': VECTOR_STORE_BACKEND,
-                'chroma_collection_name': build_collection_name(group_id),
-                'source_mime_type': getattr(uploaded_file, 'content_type', '') or '',
-                'chunk_count': 0,
-                'indexing_status': GroupDocument.IndexingStatus.PENDING,
-                'indexing_error': '',
-                'uploaded_by': request.user,
-            },
-        )
+        uploaded_files = request.FILES.getlist('files') or request.FILES.getlist('file')
+        if not uploaded_files:
+            raise ValidationError('Choose at least one file before uploading.')
 
-        if not created:
-            document.title = serializer.validated_data.get('title') or uploaded_file.name
-            document.description = serializer.validated_data.get('description', '')
-            document.file = uploaded_file
-            document.extracted_text = extracted_text
-            document.embedding_model = EMBEDDING_MODEL_NAME
-            document.vector_store_backend = VECTOR_STORE_BACKEND
-            document.chroma_collection_name = build_collection_name(group_id)
-            document.source_mime_type = getattr(uploaded_file, 'content_type', '') or ''
-            document.chunk_count = 0
-            document.indexing_status = GroupDocument.IndexingStatus.PENDING
-            document.indexing_error = ''
-            document.indexed_at = None
-            document.uploaded_by = request.user
-            document.save()
+        uploaded_documents = []
+        upload_errors = []
+        shared_title = serializer.validated_data.get('title', '').strip()
+        description = serializer.validated_data.get('description', '')
 
-        try:
-            index_document(document)
-        except ValidationError as exc:
-            mark_document_index_failed(document, str(exc.detail if hasattr(exc, 'detail') else exc))
-            raise
-        except Exception as exc:
-            mark_document_index_failed(document, str(exc))
-            raise ValidationError(f'Failed to index the uploaded document: {exc}')
+        for uploaded_file in uploaded_files:
+            try:
+                extracted_text = extract_text_from_upload(uploaded_file)
+            except ValidationError as exc:
+                upload_errors.append(
+                    {
+                        'file_name': uploaded_file.name,
+                        'error': str(exc.detail if hasattr(exc, 'detail') else exc),
+                    }
+                )
+                continue
+
+            document_title = shared_title if len(uploaded_files) == 1 and shared_title else Path(uploaded_file.name).stem
+            document = GroupDocument.objects.create(
+                group_id=group_id,
+                title=document_title,
+                description=description,
+                file=uploaded_file,
+                extracted_text=extracted_text,
+                embedding_model=EMBEDDING_MODEL_NAME,
+                vector_store_backend=VECTOR_STORE_BACKEND,
+                chroma_collection_name=build_collection_name(group_id, uuid4().hex),
+                source_mime_type=getattr(uploaded_file, 'content_type', '') or '',
+                chunk_count=0,
+                indexing_status=GroupDocument.IndexingStatus.PENDING,
+                indexing_error='',
+                uploaded_by=request.user,
+            )
+            document.chroma_collection_name = build_collection_name(group_id, document.id)
+            document.save(update_fields=['chroma_collection_name', 'updated_at'])
+
+            try:
+                index_document(document)
+            except ValidationError as exc:
+                error_message = str(exc.detail if hasattr(exc, 'detail') else exc)
+                mark_document_index_failed(document, error_message)
+                upload_errors.append({'file_name': uploaded_file.name, 'error': error_message})
+            except Exception as exc:
+                error_message = str(exc)
+                mark_document_index_failed(document, error_message)
+                upload_errors.append({'file_name': uploaded_file.name, 'error': error_message})
+
+            uploaded_documents.append(document)
+
+        if not uploaded_documents:
+            raise ValidationError({'files': upload_errors or ['No files could be uploaded.']})
 
         if not ChatMessage.objects.filter(group_id=group_id, role=ChatMessage.Role.ASSISTANT).exists():
+            document_count = len(uploaded_documents)
             ChatMessage.objects.create(
                 group_id=group_id,
                 role=ChatMessage.Role.ASSISTANT,
                 content=(
-                    f'The group document "{document.title}" is now available. '
-                    'Ask questions that stay within this source.'
+                    f'{document_count} group document{"s" if document_count != 1 else ""} now available. '
+                    'Ask questions that stay within the indexed group sources.'
                 ),
             )
 
         messages = ChatMessage.objects.filter(group_id=group_id).order_by('created_at', 'id')
+        documents = GroupDocument.objects.filter(group_id=group_id).select_related('uploaded_by').order_by('-updated_at')
         return Response(
             {
-                'document': GroupDocumentSerializer(document).data,
+                'document': GroupDocumentSerializer(uploaded_documents[0]).data,
+                'uploaded_documents': GroupDocumentSerializer(uploaded_documents, many=True).data,
+                'documents': GroupDocumentSerializer(documents, many=True).data,
+                'upload_errors': upload_errors,
                 'messages': ChatMessageSerializer(messages, many=True).data,
             }
         )
 
 
-# Sends a question through the indexed document because answers must stay bound to the selected group source.
+# Sends a question through indexed group documents because answers must stay bound to the selected group sources.
 class GroupChatView(APIView):
     # Saves the user message, generates the assistant reply from Chroma retrieval, and returns both state updates.
     def post(self, request, group_id):
@@ -245,8 +269,8 @@ class GroupChatView(APIView):
         serializer = ChatRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        document = GroupDocument.objects.filter(group_id=group_id).select_related('uploaded_by').first()
-        if document is None:
+        documents = GroupDocument.objects.filter(group_id=group_id).select_related('uploaded_by').order_by('-updated_at')
+        if not documents.exists():
             raise ValidationError('A group admin must upload a document before chat is available.')
 
         message_text = serializer.validated_data['message'].strip()
@@ -259,13 +283,13 @@ class GroupChatView(APIView):
         assistant_message = ChatMessage.objects.create(
             group_id=group_id,
             role=ChatMessage.Role.ASSISTANT,
-            content=answer_question(document, message_text),
+            content=answer_question(documents, message_text),
         )
 
         return Response(
             {
                 'message': ChatMessageSerializer(assistant_message).data,
-                'document': GroupDocumentSerializer(document).data,
+                'documents': GroupDocumentSerializer(documents, many=True).data,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -274,6 +298,35 @@ class GroupChatView(APIView):
 # Creates member accounts because admins need to provision access inside the groups they manage.
 class MemberCreateView(APIView):
     permission_classes = [IsAdminUserRole]
+
+    # Lists member users inside groups administered by the current admin so admins can review provisioned access.
+    def get(self, request):
+        admin_group_ids = set(
+            GroupMembership.objects.filter(
+                user=request.user,
+                role=GroupMembership.Role.ADMIN,
+            ).values_list('group_id', flat=True)
+        )
+        members = (
+            User.objects.filter(
+                role=User.Role.MEMBER,
+                memberships__group_id__in=admin_group_ids,
+            )
+            .distinct()
+            .prefetch_related(
+                Prefetch(
+                    'memberships',
+                    queryset=GroupMembership.objects.select_related('group').filter(group_id__in=admin_group_ids),
+                )
+            )
+            .order_by('full_name', 'email')
+        )
+        serializer = AdminMemberSerializer(
+            members,
+            many=True,
+            context={'admin_group_ids': admin_group_ids},
+        )
+        return Response(serializer.data)
 
     # Validates the admin's requested memberships and returns the new member profile.
     def post(self, request):

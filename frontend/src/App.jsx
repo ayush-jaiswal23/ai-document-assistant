@@ -10,8 +10,7 @@ const NAV_ITEMS = [
 ]
 
 function getInitialRoute() {
-  const hash = window.location.hash.replace('#', '')
-  return hash || 'login'
+  return window.location.hash.replace('#', '') || 'login'
 }
 
 function readStoredSession() {
@@ -28,7 +27,6 @@ function writeStoredSession(session) {
     window.localStorage.removeItem(SESSION_STORAGE_KEY)
     return
   }
-
   window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session))
 }
 
@@ -53,10 +51,32 @@ function getDocumentStatusLabel(status, hasDocument) {
   return 'Indexing pending'
 }
 
+function PasswordField({ label, value, onChange, visible, onToggle, placeholder, minLength }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <div className="password-control">
+        <input
+          minLength={minLength}
+          onChange={onChange}
+          placeholder={placeholder}
+          required
+          type={visible ? 'text' : 'password'}
+          value={value}
+        />
+        <button className="password-toggle" onClick={onToggle} type="button">
+          {visible ? 'Hide' : 'Show'}
+        </button>
+      </div>
+    </label>
+  )
+}
+
 function App() {
   const [route, setRoute] = useState(getInitialRoute)
   const [session, setSession] = useState(readStoredSession)
   const [workspace, setWorkspace] = useState({ profile: null, groups: [] })
+  const [adminMembers, setAdminMembers] = useState([])
   const [selectedGroupId, setSelectedGroupId] = useState('')
   const [chatState, setChatState] = useState({})
   const [authForm, setAuthForm] = useState({
@@ -77,7 +97,7 @@ function App() {
   const [uploadForm, setUploadForm] = useState({
     title: '',
     description: '',
-    file: null,
+    files: [],
   })
   const [memberForm, setMemberForm] = useState({
     fullName: '',
@@ -88,6 +108,12 @@ function App() {
     bio: '',
     groupIds: [],
   })
+  const [visiblePasswords, setVisiblePasswords] = useState({
+    authPassword: false,
+    authConfirmPassword: false,
+    memberPassword: false,
+    memberConfirmPassword: false,
+  })
   const [pending, setPending] = useState({
     auth: false,
     workspace: false,
@@ -95,20 +121,17 @@ function App() {
     chat: false,
     upload: false,
     member: false,
+    memberList: false,
   })
   const [notice, setNotice] = useState({
     type: 'info',
-    message:
-      API_MODE === 'demo'
-        ? 'Demo mode is active. Use admin@docchat.dev or MEM-MILAME-0001 with the seeded passwords.'
-        : `Backend mode is active. Requests target ${API_BASE_URL}. New companies can create an admin account from the sign up screen.`,
+    message: 'Welcome, Please signup if you are new',
   })
 
   useEffect(() => {
     function handleHashChange() {
       setRoute(getInitialRoute())
     }
-
     window.addEventListener('hashchange', handleHashChange)
     return () => window.removeEventListener('hashchange', handleHashChange)
   }, [])
@@ -119,8 +142,6 @@ function App() {
     }
   }, [route, session])
 
-  const authMode = route === 'signup' ? 'signup' : 'login'
-
   useEffect(() => {
     if (session) {
       loadWorkspace(session, selectedGroupId)
@@ -128,15 +149,13 @@ function App() {
     }
 
     setWorkspace({ profile: null, groups: [] })
+    setAdminMembers([])
     setSelectedGroupId('')
     setChatState({})
-    setProfileForm({
-      fullName: '',
-      title: '',
-      bio: '',
-      email: '',
-    })
+    setProfileForm({ fullName: '', title: '', bio: '', email: '' })
   }, [session])
+
+  const authMode = route === 'signup' ? 'signup' : 'login'
 
   async function loadWorkspace(activeSession, preferredGroupId = '') {
     setPending((current) => ({ ...current, workspace: true }))
@@ -151,29 +170,27 @@ function App() {
         email: nextWorkspace.profile.email ?? '',
       })
 
-              const fallbackGroupId =
-        preferredGroupId ||
-        nextWorkspace.groups[0]?.id ||
-        ''
+      if (nextWorkspace.profile.role === 'admin') {
+        setPending((current) => ({ ...current, memberList: true }))
+        try {
+          setAdminMembers(await api.fetchMembers(activeSession.token))
+        } finally {
+          setPending((current) => ({ ...current, memberList: false }))
+        }
+      } else {
+        setAdminMembers([])
+      }
 
+      const fallbackGroupId = preferredGroupId || nextWorkspace.groups[0]?.id || ''
       setSelectedGroupId((current) =>
         current && nextWorkspace.groups.some((group) => group.id === current)
           ? current
           : fallbackGroupId,
       )
-
-      if (fallbackGroupId) {
-        await ensureGroupContext(activeSession.token, fallbackGroupId)
-      }
+      if (fallbackGroupId) await ensureGroupContext(activeSession.token, fallbackGroupId)
     } catch (error) {
-      setNotice({
-        type: 'error',
-        message: error.message,
-      })
-
-      if (API_MODE === 'backend') {
-        handleLogout()
-      }
+      setNotice({ type: 'error', message: error.message })
+      if (API_MODE === 'backend') handleLogout()
     } finally {
       setPending((current) => ({ ...current, workspace: false }))
     }
@@ -188,7 +205,7 @@ function App() {
       [groupId]: {
         loaded: true,
         messages: context.messages,
-        document: context.document,
+        documents: context.documents,
       },
     }))
   }
@@ -213,9 +230,21 @@ function App() {
     setUploadForm((current) => ({ ...current, [field]: value }))
   }
 
+  function togglePassword(field) {
+    setVisiblePasswords((current) => ({ ...current, [field]: !current[field] }))
+  }
+
+  function toggleMemberGroup(groupId) {
+    setMemberForm((current) => ({
+      ...current,
+      groupIds: current.groupIds.includes(groupId)
+        ? current.groupIds.filter((entry) => entry !== groupId)
+        : [...current.groupIds, groupId],
+    }))
+  }
+
   async function handleAuthSubmit(event) {
     event.preventDefault()
-
     setPending((current) => ({ ...current, auth: true }))
 
     try {
@@ -247,56 +276,33 @@ function App() {
       })
       setNotice({
         type: 'success',
-        message:
-          authMode === 'signup'
-            ? 'Admin account created. Your workspace is ready.'
-            : 'Login successful. Workspace loaded.',
+        message: authMode === 'signup' ? 'Admin account created.' : 'Login successful.',
       })
       navigate('chat')
     } catch (error) {
-      setNotice({
-        type: 'error',
-        message: error.message,
-      })
+      setNotice({ type: 'error', message: error.message })
     } finally {
       setPending((current) => ({ ...current, auth: false }))
     }
   }
 
-  function toggleMemberGroup(groupId) {
-    setMemberForm((current) => ({
-      ...current,
-      groupIds: current.groupIds.includes(groupId)
-        ? current.groupIds.filter((entry) => entry !== groupId)
-        : [...current.groupIds, groupId],
-    }))
-  }
-
   async function handleMemberCreate(event) {
     event.preventDefault()
-
     if (!session) return
 
     if (memberForm.password !== memberForm.confirmPassword) {
-      setNotice({
-        type: 'error',
-        message: 'Member password confirmation does not match.',
-      })
+      setNotice({ type: 'error', message: 'Member password confirmation does not match.' })
       return
     }
-
     if (!memberForm.groupIds.length) {
-      setNotice({
-        type: 'error',
-        message: 'Assign the new member to at least one group.',
-      })
+      setNotice({ type: 'error', message: 'Assign the new member to at least one group.' })
       return
     }
 
     setPending((current) => ({ ...current, member: true }))
-
     try {
       const createdMember = await api.createMember(session.token, memberForm)
+      setAdminMembers(await api.fetchMembers(session.token))
       setMemberForm({
         fullName: '',
         email: '',
@@ -311,10 +317,7 @@ function App() {
         message: `Member created. Share member ID ${createdMember.memberId} with the user for login.`,
       })
     } catch (error) {
-      setNotice({
-        type: 'error',
-        message: error.message,
-      })
+      setNotice({ type: 'error', message: error.message })
     } finally {
       setPending((current) => ({ ...current, member: false }))
     }
@@ -325,38 +328,26 @@ function App() {
       try {
         await api.logout(session.token, session.refresh)
       } catch {
-        // Clearing the local session is still the safe fallback.
+        // Local session cleanup is still the correct fallback.
       }
     }
-
     writeStoredSession(null)
     setSession(null)
-    setNotice({
-      type: 'info',
-      message: 'Session cleared.',
-    })
+    setNotice({ type: 'info', message: 'Session cleared.' })
     navigate('login')
   }
 
   async function handleProfileSave(event) {
     event.preventDefault()
-
     if (!session) return
-
     setPending((current) => ({ ...current, profile: true }))
 
     try {
       const updatedProfile = await api.updateProfile(session.token, profileForm)
       setWorkspace((current) => ({ ...current, profile: updatedProfile }))
-      setNotice({
-        type: 'success',
-        message: 'Profile updated.',
-      })
+      setNotice({ type: 'success', message: 'Profile updated.' })
     } catch (error) {
-      setNotice({
-        type: 'error',
-        message: error.message,
-      })
+      setNotice({ type: 'error', message: error.message })
     } finally {
       setPending((current) => ({ ...current, profile: false }))
     }
@@ -364,22 +355,16 @@ function App() {
 
   async function handleGroupChange(groupId) {
     if (!session || !groupId) return
-
     setSelectedGroupId(groupId)
-
     try {
       await ensureGroupContext(session.token, groupId)
     } catch (error) {
-      setNotice({
-        type: 'error',
-        message: error.message,
-      })
+      setNotice({ type: 'error', message: error.message })
     }
   }
 
   async function handleSendMessage(event) {
     event.preventDefault()
-
     if (!session || !selectedGroup || !draftMessage.trim()) return
 
     const nextMessage = draftMessage.trim()
@@ -407,7 +392,7 @@ function App() {
         [selectedGroup.id]: {
           ...current[selectedGroup.id],
           loaded: true,
-          document: reply.document ?? current[selectedGroup.id]?.document ?? null,
+          documents: reply.documents ?? current[selectedGroup.id]?.documents ?? [],
           messages: [...(current[selectedGroup.id]?.messages ?? []), reply.message],
         },
       }))
@@ -422,10 +407,7 @@ function App() {
         },
       }))
       setDraftMessage(nextMessage)
-      setNotice({
-        type: 'error',
-        message: error.message,
-      })
+      setNotice({ type: 'error', message: error.message })
     } finally {
       setPending((current) => ({ ...current, chat: false }))
     }
@@ -433,17 +415,12 @@ function App() {
 
   async function handleDocumentUpload(event) {
     event.preventDefault()
-
-    if (!session || !selectedGroup || !uploadForm.file) {
-      setNotice({
-        type: 'error',
-        message: 'Choose a file before uploading.',
-      })
+    if (!session || !selectedGroup || uploadForm.files.length === 0) {
+      setNotice({ type: 'error', message: 'Choose at least one file before uploading.' })
       return
     }
 
     setPending((current) => ({ ...current, upload: true }))
-
     try {
       const response = await api.uploadDocument(session.token, selectedGroup.id, uploadForm)
       setChatState((current) => ({
@@ -451,10 +428,11 @@ function App() {
         [selectedGroup.id]: {
           ...current[selectedGroup.id],
           loaded: true,
-          document: response.document,
+          documents: response.documents,
           messages: response.messages ?? current[selectedGroup.id]?.messages ?? [],
         },
       }))
+      const latestDocument = response.documents[0] ?? response.document
       setWorkspace((current) => ({
         ...current,
         groups: current.groups.map((group) =>
@@ -462,43 +440,39 @@ function App() {
             ? {
                 ...group,
                 hasDocument: true,
-                documentTitle: response.document.title,
-                documentStatus: response.document.indexingStatus,
-                updatedAt: response.document.updatedAt,
+                documentCount: response.documents.length,
+                documentTitle: latestDocument.title,
+                documentStatus: latestDocument.indexingStatus,
+                updatedAt: latestDocument.updatedAt,
               }
             : group,
         ),
       }))
-      setUploadForm({
-        title: '',
-        description: '',
-        file: null,
-      })
+      setUploadForm({ title: '', description: '', files: [] })
       setNotice({
-        type: response.document.indexingStatus === 'indexed' ? 'success' : 'info',
-        message:
-          response.document.indexingStatus === 'indexed'
-            ? 'Document extracted, embedded with Gemini, and indexed in Chroma.'
-            : 'Document uploaded. Indexing metadata has been updated.',
+        type: latestDocument.indexingStatus === 'indexed' ? 'success' : 'info',
+        message: response.uploadErrors?.length
+          ? `${response.uploadedDocuments.length} file(s) uploaded. ${response.uploadErrors.length} file(s) failed.`
+          : `${response.uploadedDocuments.length} file(s) extracted, embedded with Gemini, and indexed in Chroma.`,
       })
     } catch (error) {
-      setNotice({
-        type: 'error',
-        message: error.message,
-      })
+      setNotice({ type: 'error', message: error.message })
     } finally {
       setPending((current) => ({ ...current, upload: false }))
     }
   }
 
-  const selectedGroup =
-    workspace.groups.find((group) => group.id === selectedGroupId) ?? null
+  const selectedGroup = workspace.groups.find((group) => group.id === selectedGroupId) ?? null
   const selectedGroupState = selectedGroup ? chatState[selectedGroup.id] : null
   const messages = selectedGroupState?.messages ?? []
-  const activeDocument = selectedGroupState?.document ?? null
+  const groupDocuments = selectedGroupState?.documents ?? []
+  const activeDocument = groupDocuments[0] ?? null
+  const indexedDocumentCount = groupDocuments.filter(
+    (document) => document.indexingStatus === 'indexed',
+  ).length
   const documentStatus = activeDocument?.indexingStatus ?? selectedGroup?.documentStatus ?? 'pending'
   const canUpload = selectedGroup?.role === 'admin'
-  const canChat = Boolean(selectedGroup && activeDocument && documentStatus === 'indexed')
+  const canChat = Boolean(selectedGroup && indexedDocumentCount > 0)
   const isAuthenticated = Boolean(session)
   const isAdminUser = workspace.profile?.role === 'admin'
   const manageableGroups = workspace.groups.filter((group) => group.role === 'admin')
@@ -513,7 +487,6 @@ function App() {
           Admins upload source files for each group. Members ask questions, and every
           answer stays anchored to the current document context.
         </p>
-
         <div className="hero-grid">
           <article>
             <span>01</span>
@@ -531,7 +504,6 @@ function App() {
             <p>Members can only chat with document data from groups they belong to.</p>
           </article>
         </div>
-
         <div className="mode-card">
           <p>API mode</p>
           <strong>{API_MODE === 'demo' ? 'Demo data' : 'Backend API'}</strong>
@@ -585,7 +557,6 @@ function App() {
                   : 'Login with your email or member ID'}
               </h2>
             </div>
-
             <form className="panel auth-panel" onSubmit={handleAuthSubmit}>
               {authMode === 'signup' ? (
                 <>
@@ -598,7 +569,6 @@ function App() {
                       value={authForm.fullName}
                     />
                   </label>
-
                   <label className="field">
                     <span>Company name</span>
                     <input
@@ -608,7 +578,6 @@ function App() {
                       value={authForm.companyName}
                     />
                   </label>
-
                   <label className="field">
                     <span>Admin email</span>
                     <input
@@ -631,31 +600,24 @@ function App() {
                   />
                 </label>
               )}
-
-              <label className="field">
-                <span>Password</span>
-                <input
-                  onChange={(event) => updateAuthForm('password', event.target.value)}
-                  placeholder="Enter your password"
-                  required
-                  type="password"
-                  value={authForm.password}
-                />
-              </label>
-
+              <PasswordField
+                label="Password"
+                onChange={(event) => updateAuthForm('password', event.target.value)}
+                onToggle={() => togglePassword('authPassword')}
+                placeholder="Enter your password"
+                value={authForm.password}
+                visible={visiblePasswords.authPassword}
+              />
               {authMode === 'signup' ? (
-                <label className="field">
-                  <span>Confirm password</span>
-                  <input
-                    onChange={(event) => updateAuthForm('confirmPassword', event.target.value)}
-                    placeholder="Repeat your password"
-                    required
-                    type="password"
-                    value={authForm.confirmPassword}
-                  />
-                </label>
+                <PasswordField
+                  label="Confirm password"
+                  onChange={(event) => updateAuthForm('confirmPassword', event.target.value)}
+                  onToggle={() => togglePassword('authConfirmPassword')}
+                  placeholder="Repeat your password"
+                  value={authForm.confirmPassword}
+                  visible={visiblePasswords.authConfirmPassword}
+                />
               ) : null}
-
               <button className="primary-button" disabled={pending.auth} type="submit">
                 {pending.auth
                   ? 'Submitting...'
@@ -664,7 +626,6 @@ function App() {
                     : 'Login'}
               </button>
             </form>
-
             <div className="panel switcher-panel">
               <p>
                 {authMode === 'signup'
@@ -688,7 +649,6 @@ function App() {
               <p>Profile settings</p>
               <h2>Keep your identity current for group collaboration</h2>
             </div>
-
             <form className="panel profile-panel" onSubmit={handleProfileSave}>
               <label className="field">
                 <span>Full name</span>
@@ -697,7 +657,6 @@ function App() {
                   value={profileForm.fullName}
                 />
               </label>
-
               <label className="field">
                 <span>Title</span>
                 <input
@@ -705,12 +664,10 @@ function App() {
                   value={profileForm.title}
                 />
               </label>
-
               <label className="field">
                 <span>Email</span>
                 <input disabled type="email" value={profileForm.email} />
               </label>
-
               <label className="field">
                 <span>Bio</span>
                 <textarea
@@ -719,7 +676,6 @@ function App() {
                   value={profileForm.bio}
                 />
               </label>
-
               <button className="primary-button" disabled={pending.profile} type="submit">
                 {pending.profile ? 'Saving...' : 'Save profile'}
               </button>
@@ -731,7 +687,6 @@ function App() {
                   <p>Admin controls</p>
                   <h2>Create a member login</h2>
                 </div>
-
                 <label className="field">
                   <span>Full name</span>
                   <input
@@ -740,7 +695,6 @@ function App() {
                     value={memberForm.fullName}
                   />
                 </label>
-
                 <label className="field">
                   <span>Email</span>
                   <input
@@ -750,29 +704,22 @@ function App() {
                     value={memberForm.email}
                   />
                 </label>
-
-                <label className="field">
-                  <span>Password</span>
-                  <input
-                    minLength="12"
-                    onChange={(event) => updateMemberForm('password', event.target.value)}
-                    required
-                    type="password"
-                    value={memberForm.password}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Confirm password</span>
-                  <input
-                    minLength="12"
-                    onChange={(event) => updateMemberForm('confirmPassword', event.target.value)}
-                    required
-                    type="password"
-                    value={memberForm.confirmPassword}
-                  />
-                </label>
-
+                <PasswordField
+                  label="Password"
+                  minLength="12"
+                  onChange={(event) => updateMemberForm('password', event.target.value)}
+                  onToggle={() => togglePassword('memberPassword')}
+                  value={memberForm.password}
+                  visible={visiblePasswords.memberPassword}
+                />
+                <PasswordField
+                  label="Confirm password"
+                  minLength="12"
+                  onChange={(event) => updateMemberForm('confirmPassword', event.target.value)}
+                  onToggle={() => togglePassword('memberConfirmPassword')}
+                  value={memberForm.confirmPassword}
+                  visible={visiblePasswords.memberConfirmPassword}
+                />
                 <label className="field">
                   <span>Title</span>
                   <input
@@ -780,7 +727,6 @@ function App() {
                     value={memberForm.title}
                   />
                 </label>
-
                 <label className="field">
                   <span>Bio</span>
                   <textarea
@@ -789,7 +735,6 @@ function App() {
                     value={memberForm.bio}
                   />
                 </label>
-
                 <fieldset className="field checkbox-field">
                   <legend>Assign groups</legend>
                   <div className="checkbox-grid">
@@ -805,11 +750,36 @@ function App() {
                     ))}
                   </div>
                 </fieldset>
-
                 <button className="primary-button" disabled={pending.member} type="submit">
                   {pending.member ? 'Creating...' : 'Create member'}
                 </button>
               </form>
+            ) : null}
+
+            {isAdminUser ? (
+              <section className="panel member-list-panel">
+                <div className="section-heading compact">
+                  <p>Group members</p>
+                  <h2>Members you manage</h2>
+                </div>
+                {pending.memberList ? (
+                  <div className="empty-card">Loading members...</div>
+                ) : adminMembers.length ? (
+                  <div className="member-list">
+                    {adminMembers.map((member) => (
+                      <article className="member-card" key={member.id}>
+                        <div>
+                          <strong>{member.fullName}</strong>
+                          <span>{member.memberId || member.email}</span>
+                        </div>
+                        <small>{member.groups.map((group) => group.name).join(', ')}</small>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-card">No member accounts have been created for your groups.</div>
+                )}
+              </section>
             ) : null}
           </section>
         ) : null}
@@ -822,7 +792,6 @@ function App() {
                   <p>Groups</p>
                   <h2>Your workspaces</h2>
                 </div>
-
                 <div className="group-list">
                   {workspace.groups.map((group) => (
                     <button
@@ -837,7 +806,7 @@ function App() {
                       </div>
                       <small>
                         {group.hasDocument
-                          ? `${group.documentTitle} • ${getDocumentStatusLabel(group.documentStatus, true)}`
+                          ? `${group.documentCount ?? 1} document${(group.documentCount ?? 1) === 1 ? '' : 's'} - ${getDocumentStatusLabel(group.documentStatus, true)}`
                           : 'No document yet'}
                       </small>
                     </button>
@@ -851,7 +820,6 @@ function App() {
                     <p>Knowledge base</p>
                     <h2>{selectedGroup.name}</h2>
                   </div>
-
                   <div className="doc-meta">
                     <span className={`pill ${selectedGroup.role}`}>{selectedGroup.role}</span>
                     <span
@@ -861,56 +829,45 @@ function App() {
                     >
                       {getDocumentStatusLabel(documentStatus, selectedGroup.hasDocument)}
                     </span>
+                    {selectedGroup.hasDocument ? (
+                      <span className="pill ready">
+                        {indexedDocumentCount} indexed / {groupDocuments.length} total
+                      </span>
+                    ) : null}
                   </div>
 
                   {activeDocument ? (
-                    <div className="doc-preview">
-                      <h3>{activeDocument.title}</h3>
-                      <p>{activeDocument.summary}</p>
-                      <dl>
-                        <div>
-                          <dt>Status</dt>
-                          <dd>{getDocumentStatusLabel(activeDocument.indexingStatus, true)}</dd>
+                    <div className="document-list">
+                      {groupDocuments.map((document) => (
+                        <div className="doc-preview" key={document.id}>
+                          <h3>{document.title}</h3>
+                          <p>{document.summary}</p>
+                          <dl>
+                            <div>
+                              <dt>Uploaded</dt>
+                              <dd>{formatDate(document.updatedAt)}</dd>
+                            </div>
+                            <div>
+                              <dt>Source</dt>
+                              <dd>{document.fileName}</dd>
+                            </div>
+                            <div>
+                              <dt>Uploaded by</dt>
+                              <dd>{document.uploadedBy}</dd>
+                            </div>
+                          </dl>
+                          {document.indexingError ? (
+                            <div className="doc-alert failed">{document.indexingError}</div>
+                          ) : null}
                         </div>
-                        <div>
-                          <dt>Uploaded</dt>
-                          <dd>{formatDate(activeDocument.updatedAt)}</dd>
-                        </div>
-                        <div>
-                          <dt>Indexed</dt>
-                          <dd>{formatDate(activeDocument.indexedAt)}</dd>
-                        </div>
-                        <div>
-                          <dt>Source</dt>
-                          <dd>{activeDocument.fileName}</dd>
-                        </div>
-                        <div>
-                          <dt>Stored in</dt>
-                          <dd>{activeDocument.vectorStoreBackend || 'chroma'}</dd>
-                        </div>
-                        <div>
-                          <dt>Embedding model</dt>
-                          <dd>{activeDocument.embeddingModel || 'models/gemini-embedding-001'}</dd>
-                        </div>
-                        <div>
-                          <dt>Chunks</dt>
-                          <dd>{activeDocument.chunkCount || 0}</dd>
-                        </div>
-                        <div>
-                          <dt>Uploaded by</dt>
-                          <dd>{activeDocument.uploadedBy}</dd>
-                        </div>
-                      </dl>
-                      {activeDocument.indexingError ? (
-                        <div className="doc-alert failed">{activeDocument.indexingError}</div>
-                      ) : null}
+                      ))}
                     </div>
                   ) : (
                     <div className="empty-card">
-                      <h3>No document indexed</h3>
+                      <h3>No documents indexed</h3>
                       <p>
-                        Members cannot chat in this group until an admin uploads a source
-                        document.
+                        Members cannot chat in this group until an admin uploads source
+                        documents.
                       </p>
                     </div>
                   )}
@@ -925,7 +882,6 @@ function App() {
                           value={uploadForm.title}
                         />
                       </label>
-
                       <label className="field">
                         <span>Description</span>
                         <textarea
@@ -935,30 +891,30 @@ function App() {
                           value={uploadForm.description}
                         />
                       </label>
-
                       <label className="field file-field">
-                        <span>Upload document</span>
+                        <span>Upload documents</span>
                         <input
                           accept=".txt,.md,.pdf"
+                          multiple
                           onChange={(event) =>
-                            updateUploadForm('file', event.target.files?.[0] ?? null)
+                            updateUploadForm('files', Array.from(event.target.files ?? []))
                           }
                           type="file"
                         />
                       </label>
-
-                      <button
-                        className="primary-button"
-                        disabled={pending.upload}
-                        type="submit"
-                      >
+                      {uploadForm.files.length ? (
+                        <div className="selected-files">
+                          {uploadForm.files.map((file) => (
+                            <span key={`${file.name}-${file.size}`}>{file.name}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <button className="primary-button" disabled={pending.upload} type="submit">
                         {pending.upload ? 'Uploading...' : 'Upload and index'}
                       </button>
                     </form>
                   ) : (
-                    <div className="member-hint">
-                      Only admins can upload or replace this group document.
-                    </div>
+                    <div className="member-hint">Only admins can upload documents for this group.</div>
                   )}
                 </section>
               ) : null}
@@ -972,7 +928,6 @@ function App() {
                 </div>
                 {pending.workspace ? <span className="status-dot">Refreshing...</span> : null}
               </div>
-
               <div className="message-stream">
                 {messages.length ? (
                   messages.map((message) => (
@@ -987,23 +942,20 @@ function App() {
                 ) : (
                   <div className="empty-card">
                     <h3>No messages yet</h3>
-                    <p>
-                      Start the conversation once this group has an indexed document.
-                    </p>
+                    <p>Start the conversation once this group has an indexed document.</p>
                   </div>
                 )}
               </div>
-
               <form className="composer" onSubmit={handleSendMessage}>
                 <textarea
                   disabled={!canChat || pending.chat}
                   onChange={(event) => setDraftMessage(event.target.value)}
                   placeholder={
                     canChat
-                      ? 'Ask about the uploaded document'
+                      ? 'Ask about the uploaded documents'
                       : activeDocument
                         ? 'Chat stays locked until indexing completes successfully'
-                        : 'Chat stays locked until an admin uploads a document'
+                        : 'Chat stays locked until an admin uploads documents'
                   }
                   rows="4"
                   value={draftMessage}
@@ -1011,9 +963,9 @@ function App() {
                 <div className="composer-footer">
                   <span>
                     {canChat
-                      ? 'Responses are limited to the active group document indexed in Chroma.'
+                      ? 'Responses are limited to indexed group documents in Chroma.'
                       : activeDocument
-                        ? 'This group document is not ready for retrieval yet.'
+                        ? 'No uploaded group document is ready for retrieval yet.'
                         : 'Document access is required before members can chat.'}
                   </span>
                   <button

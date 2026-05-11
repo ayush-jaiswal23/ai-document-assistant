@@ -13,6 +13,22 @@ class UserSummarySerializer(serializers.ModelSerializer):
         fields = ['id', 'full_name', 'email', 'member_id', 'role', 'company_name', 'title', 'bio']
 
 
+class AdminMemberSerializer(serializers.ModelSerializer):
+    groups = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'full_name', 'email', 'member_id', 'role', 'title', 'bio', 'groups']
+
+    def get_groups(self, obj):
+        admin_group_ids = self.context.get('admin_group_ids', set())
+        return [
+            {'id': membership.group_id, 'name': membership.group.name}
+            for membership in obj.memberships.all()
+            if membership.group_id in admin_group_ids
+        ]
+
+
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     password = serializers.CharField(write_only=True)
@@ -133,11 +149,11 @@ class GroupDocumentSerializer(serializers.ModelSerializer):
 
 class GroupSummarySerializer(serializers.ModelSerializer):
     role = serializers.CharField()
-    document = GroupDocumentSerializer(read_only=True)
+    documents = GroupDocumentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Group
-        fields = ['id', 'name', 'description', 'role', 'document']
+        fields = ['id', 'name', 'description', 'role', 'documents']
 
 
 class ChatMessageSerializer(serializers.ModelSerializer):
@@ -148,12 +164,12 @@ class ChatMessageSerializer(serializers.ModelSerializer):
 
 class GroupDetailSerializer(serializers.ModelSerializer):
     role = serializers.CharField()
-    document = GroupDocumentSerializer(read_only=True)
+    documents = GroupDocumentSerializer(many=True, read_only=True)
     messages = ChatMessageSerializer(many=True, read_only=True)
 
     class Meta:
         model = Group
-        fields = ['id', 'name', 'description', 'role', 'document', 'messages']
+        fields = ['id', 'name', 'description', 'role', 'documents', 'messages']
 
 
 class MemberCreateSerializer(serializers.Serializer):
@@ -224,7 +240,7 @@ class MemberCreateSerializer(serializers.Serializer):
 class DocumentUploadSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
-    file = serializers.FileField()
+    file = serializers.FileField(required=False)
 
 
 class ChatRequestSerializer(serializers.Serializer):

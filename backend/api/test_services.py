@@ -21,14 +21,13 @@ class ServiceTests(TestCase):
         )
 
     def test_build_answer_cache_key_hashing(self):
-        updated_at = timezone.now()
-        question = 'What is AI?'
-        key1 = build_answer_cache_key(1, updated_at, 'what is ai?')
-        key2 = build_answer_cache_key(1, updated_at, 'what is ai?')
+        self.document.updated_at = timezone.now()
+        key1 = build_answer_cache_key([self.document], 'what is ai?')
+        key2 = build_answer_cache_key([self.document], 'what is ai?')
         
         self.assertEqual(key1, key2)
         self.assertNotIn(' ', key1)
-        self.assertIn('doc-answer:1:', key1)
+        self.assertIn(f'doc-answer:{self.document.id}-', key1)
 
     @patch('api.services.get_vector_store')
     def test_answer_question_low_relevance(self, mock_get_vector_store):
@@ -42,18 +41,23 @@ class ServiceTests(TestCase):
         answer = answer_question(self.document, 'What is the capital of France?')
         
         self.assertIn('I could not find any relevant information', answer)
-        self.assertIn(self.document.title, answer)
 
+    @patch('api.services.init_chat_model')
     @patch('api.services.get_vector_store')
-    def test_answer_question_high_relevance(self, mock_get_vector_store):
+    def test_answer_question_high_relevance(self, mock_get_vector_store, mock_init_chat_model):
         mock_vs = MagicMock()
         # Mock similarity_search_with_relevance_scores to return a high score
         mock_doc = MagicMock()
         mock_doc.page_content = 'Artificial intelligence is the simulation of human intelligence by machines.'
         mock_vs.similarity_search_with_relevance_scores.return_value = [(mock_doc, 0.9)]
         mock_get_vector_store.return_value = mock_vs
+        mock_model = MagicMock()
+        mock_model.invoke.return_value = MagicMock(
+            content='Artificial intelligence is the simulation of human intelligence by machines.'
+        )
+        mock_init_chat_model.return_value = mock_model
 
         answer = answer_question(self.document, 'What is AI?')
         
-        self.assertIn('Based on "Test Doc"', answer)
+        self.assertIn('Based on Test Doc', answer)
         self.assertIn('artificial intelligence', answer.lower())

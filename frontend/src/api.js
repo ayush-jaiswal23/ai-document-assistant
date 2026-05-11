@@ -52,25 +52,27 @@ function createSeededDemoDb() {
       { userId: 'user-member', groupId: 'grp-policy', role: 'member' },
     ],
     documents: {
-      'grp-ops': {
-        id: 'doc-ops',
-        title: 'Support Escalation Handbook',
-        summary:
-          'Covers severity tiers, required response times, and the escalation ladder for blocked incidents.',
-        fileName: 'support-handbook.md',
-        content:
-          'Severity 1 incidents require an acknowledgement within 15 minutes and escalation to the incident commander immediately. Severity 2 incidents require acknowledgement within 30 minutes and team lead notification. Billing issues are routed to the finance queue within one business day. Product bugs should include reproduction steps, customer impact, and account id.',
-        description: 'Operations support runbook uploaded by the workspace admin.',
-        updatedAt: '2026-03-20T10:30:00.000Z',
-        indexedAt: '2026-03-20T10:31:00.000Z',
-        uploadedBy: 'Avery Admin',
-        embeddingModel: 'models/gemini-embedding-001',
-        vectorStoreBackend: 'chroma',
-        chunkCount: 4,
-        indexingStatus: 'indexed',
-        indexingError: '',
-      },
-      'grp-policy': null,
+      'grp-ops': [
+        {
+          id: 'doc-ops',
+          title: 'Support Escalation Handbook',
+          summary:
+            'Covers severity tiers, required response times, and the escalation ladder for blocked incidents.',
+          fileName: 'support-handbook.md',
+          content:
+            'Severity 1 incidents require an acknowledgement within 15 minutes and escalation to the incident commander immediately. Severity 2 incidents require acknowledgement within 30 minutes and team lead notification. Billing issues are routed to the finance queue within one business day. Product bugs should include reproduction steps, customer impact, and account id.',
+          description: 'Operations support runbook uploaded by the workspace admin.',
+          updatedAt: '2026-03-20T10:30:00.000Z',
+          indexedAt: '2026-03-20T10:31:00.000Z',
+          uploadedBy: 'Avery Admin',
+          embeddingModel: 'models/gemini-embedding-001',
+          vectorStoreBackend: 'chroma',
+          chunkCount: 4,
+          indexingStatus: 'indexed',
+          indexingError: '',
+        },
+      ],
+      'grp-policy': [],
     },
     messages: {
       'grp-ops': [
@@ -154,6 +156,12 @@ function getDemoUserByToken(token) {
   return { db, user }
 }
 
+function normalizeDocuments(value) {
+  if (Array.isArray(value)) return value
+  if (value) return [value]
+  return []
+}
+
 function buildWorkspace(db, user) {
   const profile = {
     id: user.id,
@@ -170,17 +178,19 @@ function buildWorkspace(db, user) {
     .filter((membership) => membership.userId === user.id)
     .map((membership) => {
       const group = db.groups.find((entry) => entry.id === membership.groupId)
-      const document = db.documents[membership.groupId]
+      const documents = normalizeDocuments(db.documents[membership.groupId])
+      const latestDocument = documents[0] ?? null
 
       return {
         id: group.id,
         name: group.name,
         description: group.description,
         role: membership.role,
-        hasDocument: Boolean(document),
-        documentTitle: document?.title ?? '',
-        documentStatus: document?.indexingStatus ?? 'pending',
-        updatedAt: document?.updatedAt ?? null,
+        hasDocument: documents.length > 0,
+        documentCount: documents.length,
+        documentTitle: latestDocument?.title ?? '',
+        documentStatus: latestDocument?.indexingStatus ?? 'pending',
+        updatedAt: latestDocument?.updatedAt ?? null,
       }
     })
 
@@ -207,15 +217,18 @@ function chunkContent(content) {
     .filter(Boolean)
 }
 
-function generateDocumentAnswer(message, document) {
+function generateDocumentAnswer(message, documents) {
   const prompt = message.toLowerCase()
-  const chunks = chunkContent(document.content)
+  const sourceDocuments = normalizeDocuments(documents)
+  const searchableChunks = sourceDocuments.flatMap((document) =>
+    chunkContent(document.content).map((chunk) => ({ chunk, document })),
+  )
   const relevantChunk =
-    chunks.find((chunk) =>
+    searchableChunks.find(({ chunk }) =>
       prompt.split(/\s+/).some((term) => term.length > 3 && chunk.toLowerCase().includes(term)),
-    ) ?? chunks[0]
+    ) ?? searchableChunks[0]
 
-  return `According to "${document.title}", ${relevantChunk}.`
+  return `According to "${relevantChunk.document.title}", ${relevantChunk.chunk}.`
 }
 
 async function request(path, options = {}) {
@@ -279,17 +292,32 @@ function mapProfile(profile) {
   }
 }
 
+function mapAdminMember(member) {
+  return {
+    id: member.id,
+    fullName: member.full_name ?? member.fullName ?? '',
+    email: member.email ?? '',
+    memberId: member.member_id ?? member.memberId ?? '',
+    role: member.role ?? 'member',
+    title: member.title ?? '',
+    bio: member.bio ?? '',
+    groups: member.groups ?? [],
+  }
+}
+
 function mapGroup(group) {
-  const document = group.document ?? null
+  const documents = (group.documents ?? (group.document ? [group.document] : [])).map(mapDocument)
+  const latestDocument = documents[0] ?? null
   return {
     id: group.id,
     name: group.name,
     description: group.description ?? '',
     role: group.role,
-    hasDocument: Boolean(document),
-    documentTitle: document?.title ?? '',
-    documentStatus: document?.indexing_status ?? document?.indexingStatus ?? 'pending',
-    updatedAt: document?.updated_at ?? document?.updatedAt ?? null,
+    hasDocument: documents.length > 0,
+    documentCount: documents.length,
+    documentTitle: latestDocument?.title ?? '',
+    documentStatus: latestDocument?.indexingStatus ?? 'pending',
+    updatedAt: latestDocument?.updatedAt ?? null,
   }
 }
 
@@ -381,7 +409,7 @@ const demoApi = {
     })
     db.memberships.push({ userId: user.id, groupId, role: 'admin' })
     db.messages[groupId] = []
-    db.documents[groupId] = null
+    db.documents[groupId] = []
     writeDemoDb(db)
 
     return createSession(user)
@@ -409,16 +437,51 @@ const demoApi = {
     return buildWorkspace(db, user)
   },
 
+  async fetchMembers(token) {
+    const { db, user } = getDemoUserByToken(token)
+    if (user.role !== 'admin') {
+      throw new Error('Only admins can view members.')
+    }
+
+    const adminGroupIds = db.memberships
+      .filter((entry) => entry.userId === user.id && entry.role === 'admin')
+      .map((entry) => entry.groupId)
+
+    return db.users
+      .filter(
+        (entry) =>
+          entry.role === 'member' &&
+          db.memberships.some(
+            (membership) =>
+              membership.userId === entry.id && adminGroupIds.includes(membership.groupId),
+          ),
+      )
+      .map((entry) => ({
+        id: entry.id,
+        fullName: entry.fullName,
+        email: entry.email,
+        memberId: entry.memberId ?? '',
+        role: entry.role,
+        title: entry.title ?? '',
+        bio: entry.bio ?? '',
+        groups: db.memberships
+          .filter(
+            (membership) =>
+              membership.userId === entry.id && adminGroupIds.includes(membership.groupId),
+          )
+          .map((membership) => {
+            const group = db.groups.find((candidate) => candidate.id === membership.groupId)
+            return { id: group.id, name: group.name }
+          }),
+      }))
+  },
+
   async fetchGroupContext(token, groupId) {
     const { db, user } = getDemoUserByToken(token)
     requireGroupMembership(db, user.id, groupId)
 
     return {
-      document: db.documents[groupId]
-        ? {
-            ...db.documents[groupId],
-          }
-        : null,
+      documents: normalizeDocuments(db.documents[groupId]).map((document) => ({ ...document })),
       messages: (db.messages[groupId] ?? []).map((message) => ({ ...message })),
     }
   },
@@ -502,34 +565,39 @@ const demoApi = {
       throw new Error('Only group admins can upload documents.')
     }
 
-    const text = await payload.file.text()
-    const content = text.trim() || `${payload.title || payload.file.name} uploaded without preview text.`
-    const document = {
-      id: `doc-${Date.now()}`,
-      title: payload.title || payload.file.name,
-      description: payload.description || '',
-      summary:
-        payload.description ||
-        content.slice(0, 180) + (content.length > 180 ? '...' : ''),
-      fileName: payload.file.name,
-      content,
-      updatedAt: new Date().toISOString(),
-      indexedAt: new Date().toISOString(),
-      uploadedBy: user.fullName,
-      embeddingModel: 'models/gemini-embedding-001',
-      vectorStoreBackend: 'chroma',
-      chunkCount: Math.max(1, Math.ceil(content.length / 240)),
-      indexingStatus: 'indexed',
-      indexingError: '',
-    }
+    const files = payload.files?.length ? payload.files : [payload.file].filter(Boolean)
+    const uploadedDocuments = await Promise.all(
+      files.map(async (file, index) => {
+        const text = await file.text()
+        const content = text.trim() || `${payload.title || file.name} uploaded without preview text.`
+        return {
+          id: `doc-${Date.now()}-${index}`,
+          title: files.length === 1 && payload.title ? payload.title : file.name.replace(/\.[^.]+$/, ''),
+          description: payload.description || '',
+          summary:
+            payload.description ||
+            content.slice(0, 180) + (content.length > 180 ? '...' : ''),
+          fileName: file.name,
+          content,
+          updatedAt: new Date().toISOString(),
+          indexedAt: new Date().toISOString(),
+          uploadedBy: user.fullName,
+          embeddingModel: 'models/gemini-embedding-001',
+          vectorStoreBackend: 'chroma',
+          chunkCount: Math.max(1, Math.ceil(content.length / 240)),
+          indexingStatus: 'indexed',
+          indexingError: '',
+        }
+      }),
+    )
 
-    db.documents[groupId] = document
+    db.documents[groupId] = [...uploadedDocuments, ...normalizeDocuments(db.documents[groupId])]
     if (!db.messages[groupId]?.length) {
       db.messages[groupId] = [
         {
           id: `message-${Date.now()}`,
           role: 'assistant',
-          content: `The group document "${document.title}" is now available. Ask questions that stay within this source.`,
+          content: `${uploadedDocuments.length} group document${uploadedDocuments.length === 1 ? '' : 's'} now available. Ask questions that stay within this source.`,
           createdAt: new Date().toISOString(),
         },
       ]
@@ -537,7 +605,10 @@ const demoApi = {
     writeDemoDb(db)
 
     return {
-      document,
+      document: uploadedDocuments[0],
+      uploadedDocuments,
+      documents: normalizeDocuments(db.documents[groupId]).map((entry) => ({ ...entry })),
+      uploadErrors: [],
       messages: db.messages[groupId].map((message) => ({ ...message })),
     }
   },
@@ -546,15 +617,15 @@ const demoApi = {
     const { db, user } = getDemoUserByToken(token)
     requireGroupMembership(db, user.id, groupId)
 
-    const document = db.documents[groupId]
-    if (!document) {
+    const documents = normalizeDocuments(db.documents[groupId])
+    if (!documents.length) {
       throw new Error('A group admin must upload a document before chat is available.')
     }
 
     const reply = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
-      content: generateDocumentAnswer(message, document),
+      content: generateDocumentAnswer(message, documents),
       createdAt: new Date().toISOString(),
     }
 
@@ -572,7 +643,7 @@ const demoApi = {
 
     return {
       message: reply,
-      document,
+      documents: documents.map((document) => ({ ...document })),
     }
   },
 }
@@ -644,6 +715,16 @@ const backendApi = {
     }
   },
 
+  async fetchMembers(token) {
+    const payload = await request('/api/members/', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    return payload.map(mapAdminMember)
+  },
+
   async fetchGroupContext(token, groupId) {
     const payload = await request(`/api/groups/${groupId}/`, {
       headers: {
@@ -652,7 +733,7 @@ const backendApi = {
     })
 
     return {
-      document: mapDocument(payload.document),
+      documents: (payload.documents ?? (payload.document ? [payload.document] : [])).map(mapDocument),
       messages: (payload.messages ?? []).map(mapMessage),
     }
   },
@@ -698,7 +779,9 @@ const backendApi = {
     const formData = new FormData()
     formData.append('title', payload.title)
     formData.append('description', payload.description)
-    formData.append('file', payload.file)
+    payload.files.forEach((file) => {
+      formData.append('files', file)
+    })
 
     const response = await request(`/api/groups/${groupId}/documents/upload/`, {
       method: 'POST',
@@ -710,6 +793,9 @@ const backendApi = {
 
     return {
       document: mapDocument(response.document),
+      uploadedDocuments: (response.uploaded_documents ?? []).map(mapDocument),
+      documents: (response.documents ?? (response.document ? [response.document] : [])).map(mapDocument),
+      uploadErrors: response.upload_errors ?? [],
       messages: (response.messages ?? []).map(mapMessage),
     }
   },
@@ -729,7 +815,7 @@ const backendApi = {
 
     return {
       message: mapMessage(payload.message ?? payload),
-      document: mapDocument(payload.document),
+      documents: (payload.documents ?? (payload.document ? [payload.document] : [])).map(mapDocument),
     }
   },
 }

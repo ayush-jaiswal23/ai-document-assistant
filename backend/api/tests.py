@@ -122,6 +122,16 @@ class AuthAndGroupSecurityTests(APITestCase):
             ).exists()
         )
 
+    def test_admin_can_list_members_for_owned_groups_only(self):
+        self.authenticate('admin@example.com', 'AdminPassword@123')
+
+        response = self.client.get(reverse('member_create'))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        member_ids = {member['member_id'] for member in response.data}
+        self.assertIn('MEM-MEMBER-0001', member_ids)
+        self.assertNotIn('MEM-OTHER-0001', member_ids)
+
     def test_member_cannot_create_member_accounts(self):
         self.authenticate('MEM-MEMBER-0001', 'MemberPassword@123')
 
@@ -147,7 +157,7 @@ class AuthAndGroupSecurityTests(APITestCase):
             extracted_text='Budget approvals require CFO signoff.',
             embedding_model='models/gemini-embedding-001',
             vector_store_backend='chroma',
-            chroma_collection_name=f'group-document-{self.other_group.id}',
+            chroma_collection_name=f'group-document-{self.other_group.id}-1',
             source_mime_type='text/markdown',
             chunk_count=1,
             indexing_status=GroupDocument.IndexingStatus.INDEXED,
@@ -192,9 +202,10 @@ class AuthAndGroupSecurityTests(APITestCase):
         document = GroupDocument.objects.get(group=self.group)
         self.assertEqual(document.embedding_model, 'models/gemini-embedding-001')
         self.assertEqual(document.vector_store_backend, 'chroma')
-        self.assertEqual(document.chroma_collection_name, f'group-document-{self.group.id}')
+        self.assertEqual(document.chroma_collection_name, f'group-document-{self.group.id}-{document.id}')
         self.assertEqual(document.indexing_status, GroupDocument.IndexingStatus.INDEXED)
         self.assertEqual(document.chunk_count, 1)
+        self.assertEqual(len(upload_response.data['documents']), 1)
         self.client.credentials()
         self.authenticate('MEM-MEMBER-0001', 'MemberPassword@123')
 
@@ -206,3 +217,71 @@ class AuthAndGroupSecurityTests(APITestCase):
 
         self.assertEqual(chat_response.status_code, status.HTTP_201_CREATED)
         self.assertIn('Operations Guide', chat_response.data['message']['content'])
+
+    @patch('api.views.index_document')
+    def test_group_admin_can_upload_multiple_documents(self, mock_index_document):
+        def index_side_effect(document):
+            document.chunk_count = 1
+            document.indexing_status = GroupDocument.IndexingStatus.INDEXED
+            document.indexing_error = ''
+            document.save(update_fields=['chunk_count', 'indexing_status', 'indexing_error', 'updated_at'])
+
+        mock_index_document.side_effect = index_side_effect
+
+        self.authenticate('admin@example.com', 'AdminPassword@123')
+        for title, body in (
+            ('Operations Guide', b'Severity 1 incidents require a 15 minute acknowledgement.'),
+            ('Escalation Matrix', b'Escalations go to the incident commander.'),
+        ):
+            response = self.client.post(
+                reverse('group_document_upload', kwargs={'group_id': self.group.id}),
+                {
+                    'title': title,
+                    'description': '',
+                    'file': SimpleUploadedFile(
+                        f'{title.lower().replace(" ", "-")}.md',
+                        body,
+                        content_type='text/markdown',
+                    ),
+                },
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        documents = GroupDocument.objects.filter(group=self.group)
+        self.assertEqual(documents.count(), 2)
+        self.assertEqual(set(documents.values_list('title', flat=True)), {'Operations Guide', 'Escalation Matrix'})
+
+    @patch('api.views.index_document')
+    def test_group_admin_can_select_multiple_files_in_one_upload(self, mock_index_document):
+        def index_side_effect(document):
+            document.chunk_count = 1
+            document.indexing_status = GroupDocument.IndexingStatus.INDEXED
+            document.indexing_error = ''
+            document.save(update_fields=['chunk_count', 'indexing_status', 'indexing_error', 'updated_at'])
+
+        mock_index_document.side_effect = index_side_effect
+
+        self.authenticate('admin@example.com', 'AdminPassword@123')
+        response = self.client.post(
+            reverse('group_document_upload', kwargs={'group_id': self.group.id}),
+            {
+                'description': 'Batch upload',
+                'files': [
+                    SimpleUploadedFile(
+                        'operations.md',
+                        b'Severity 1 incidents require a 15 minute acknowledgement.',
+                        content_type='text/markdown',
+                    ),
+                    SimpleUploadedFile(
+                        'matrix.md',
+                        b'Escalations go to the incident commander.',
+                        content_type='text/markdown',
+                    ),
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(GroupDocument.objects.filter(group=self.group).count(), 2)
+        self.assertEqual(len(response.data['uploaded_documents']), 2)
+        self.assertEqual(len(response.data['documents']), 2)

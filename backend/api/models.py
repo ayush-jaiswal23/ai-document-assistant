@@ -99,14 +99,14 @@ def document_upload_path(instance, filename):
     return f'group_documents/{instance.group_id}/{timezone.now():%Y%m%d%H%M%S}_{filename}'
 
 
-# Stores the uploaded source document and its indexing metadata because Chroma state must be reflected in the database.
+# Stores each uploaded source document and its indexing metadata because Chroma state must be reflected per file.
 class GroupDocument(models.Model):
     class IndexingStatus(models.TextChoices):
         PENDING = 'pending', 'Pending'
         INDEXED = 'indexed', 'Indexed'
         FAILED = 'failed', 'Failed'
 
-    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='document')
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='documents')
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     file = models.FileField(
