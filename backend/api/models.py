@@ -4,9 +4,7 @@ from django.core.validators import FileExtensionValidator
 from django.db import models
 from django.utils import timezone
 
-# Creates regular and superuser accounts because this project authenticates with email instead of username.
 class UserManager(BaseUserManager):
-    # Normalizes email and applies the shared user defaults so every account is created consistently.
     def create_user(self, email, password=None, **extra_fields):
         if not email:
             raise ValueError('Email is required.')
@@ -18,7 +16,6 @@ class UserManager(BaseUserManager):
         user.save(using=self._db)
         return user
 
-    # Enforces the admin-only flags required by Django for superuser access.
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault('role', User.Role.ADMIN)
         extra_fields.setdefault('is_staff', True)
@@ -33,7 +30,6 @@ class UserManager(BaseUserManager):
 
         return self.create_user(email, password, **extra_fields)
 
-# Stores the authenticated person profile because the app needs both admins and member-only identities.
 class User(AbstractBaseUser, PermissionsMixin):
     class Role(models.TextChoices):
         ADMIN = 'admin', 'Admin'
@@ -56,24 +52,18 @@ class User(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['full_name']
 
-    # Returns the email because it is the primary login identifier and most useful admin label.
     def __str__(self):
         return self.email
 
-
-# Represents a company workspace or team chat boundary because documents and messages are scoped per group.
 class Group(models.Model):
     name = models.CharField(max_length=255, unique=True)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    # Returns the group name because it is the clearest human-readable workspace identifier.
     def __str__(self):
         return self.name
 
-
-# Connects users to groups with a per-group role because global roles alone are not enough for access control.
 class GroupMembership(models.Model):
     class Role(models.TextChoices):
         ADMIN = 'admin', 'Admin'
@@ -89,17 +79,12 @@ class GroupMembership(models.Model):
             models.UniqueConstraint(fields=['user', 'group'], name='unique_group_membership'),
         ]
 
-    # Returns a readable membership summary to make admin screens and logs easier to inspect.
     def __str__(self):
         return f'{self.user.email} -> {self.group.name} ({self.role})'
 
-
-# Builds a timestamped upload path so replacements do not collide and files stay grouped by workspace.
 def document_upload_path(instance, filename):
     return f'group_documents/{instance.group_id}/{timezone.now():%Y%m%d%H%M%S}_{filename}'
 
-
-# Stores each uploaded source document and its indexing metadata because Chroma state must be reflected per file.
 class GroupDocument(models.Model):
     class IndexingStatus(models.TextChoices):
         PENDING = 'pending', 'Pending'
@@ -130,12 +115,9 @@ class GroupDocument(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    # Returns a compact document label because group-scoped titles are easier to identify in admin and debugging.
     def __str__(self):
         return f'{self.group.name}: {self.title}'
 
-
-# Persists the chat transcript because members need an auditable history of document-grounded conversations.
 class ChatMessage(models.Model):
     class Role(models.TextChoices):
         USER = 'user', 'User'
@@ -150,6 +132,5 @@ class ChatMessage(models.Model):
     class Meta:
         ordering = ['created_at', 'id']
 
-    # Returns the group and speaker role because that is the most useful quick summary for message rows.
     def __str__(self):
         return f'{self.group.name} [{self.role}]'

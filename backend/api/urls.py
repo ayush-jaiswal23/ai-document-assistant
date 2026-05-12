@@ -1,17 +1,9 @@
 from django.urls import path
-
-from .views import (
-    AdminSignupView,
-    GroupChatView,
-    GroupDetailView,
-    GroupDocumentUploadView,
-    GroupListView,
-    LoginView,
-    LogoutView,
-    MemberCreateView,
-    ProfileView,
-    RefreshView,
-)
+from .views.auth import AdminSignupView, LoginView, RefreshView, LogoutView
+from .views.workspace import ProfileView, GroupListView, GroupDetailView
+from .views.documents import GroupDocumentUploadView
+from .views.chat import GroupChatView
+from .views.members import MemberCreateView
 
 urlpatterns = [
     path('api/auth/signup/', AdminSignupView.as_view(), name='signup'),

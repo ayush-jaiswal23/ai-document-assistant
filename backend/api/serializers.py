@@ -6,12 +6,10 @@ from .models import ChatMessage, Group, GroupDocument, GroupMembership
 
 User = get_user_model()
 
-
 class UserSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'full_name', 'email', 'member_id', 'role', 'company_name', 'title', 'bio']
-
 
 class AdminMemberSerializer(serializers.ModelSerializer):
     groups = serializers.SerializerMethodField()
@@ -27,7 +25,6 @@ class AdminMemberSerializer(serializers.ModelSerializer):
             for membership in obj.memberships.all()
             if membership.group_id in admin_group_ids
         ]
-
 
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
@@ -55,7 +52,6 @@ class LoginSerializer(serializers.Serializer):
         attrs['user'] = user
         return attrs
 
-
 class AppTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
@@ -64,13 +60,11 @@ class AppTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['member_id'] = user.member_id or ''
         return token
 
-
 class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'full_name', 'email', 'member_id', 'role', 'company_name', 'title', 'bio']
         read_only_fields = ['id', 'email', 'member_id', 'role']
-
 
 class AdminSignupSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
@@ -113,7 +107,6 @@ class AdminSignupSerializer(serializers.Serializer):
             description=f'Primary document workspace for {company_name.strip()}.',
         )
 
-
 class GroupDocumentSerializer(serializers.ModelSerializer):
     uploaded_by = serializers.CharField(source='uploaded_by.full_name', read_only=True)
     file_name = serializers.SerializerMethodField()
@@ -146,7 +139,6 @@ class GroupDocumentSerializer(serializers.ModelSerializer):
         preview = obj.extracted_text.strip()
         return preview[:180] + ('...' if len(preview) > 180 else '')
 
-
 class GroupSummarySerializer(serializers.ModelSerializer):
     role = serializers.CharField()
     documents = GroupDocumentSerializer(many=True, read_only=True)
@@ -155,12 +147,10 @@ class GroupSummarySerializer(serializers.ModelSerializer):
         model = Group
         fields = ['id', 'name', 'description', 'role', 'documents']
 
-
 class ChatMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatMessage
         fields = ['id', 'role', 'content', 'created_at']
-
 
 class GroupDetailSerializer(serializers.ModelSerializer):
     role = serializers.CharField()
@@ -170,7 +160,6 @@ class GroupDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Group
         fields = ['id', 'name', 'description', 'role', 'documents', 'messages']
-
 
 class MemberCreateSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
@@ -236,12 +225,10 @@ class MemberCreateSerializer(serializers.Serializer):
                 return candidate
             suffix += 1
 
-
 class DocumentUploadSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
     file = serializers.FileField(required=False)
-
 
 class ChatRequestSerializer(serializers.Serializer):
     message = serializers.CharField(max_length=4000)

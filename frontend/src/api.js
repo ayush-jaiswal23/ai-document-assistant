@@ -246,11 +246,21 @@ async function request(path, options = {}) {
   }
 
   if (!response.ok) {
-    const message =
-      payload?.detail ??
-      payload?.message ??
-      `Request failed with status ${response.status}.`
-    throw new Error(message)
+    let message = payload?.detail ?? payload?.message
+
+    // Handle structured validation errors (e.g., { password: ["too short", "too common"] })
+    if (!message && payload && typeof payload === 'object') {
+      const issues = Object.entries(payload).map(([field, errors]) => {
+        const label = field === 'non_field_errors' ? '' : `${field}: `
+        const errorText = Array.isArray(errors) ? errors.join(' ') : String(errors)
+        return `${label}${errorText}`
+      })
+      if (issues.length > 0) {
+        message = issues.join(' | ')
+      }
+    }
+
+    throw new Error(message ?? `Request failed with status ${response.status}.`)
   }
 
   return payload

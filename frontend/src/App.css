@@ -632,6 +632,43 @@
   background: rgba(16, 112, 105, 0.1);
 }
 
+.message-card.assistant.pending-animation {
+  opacity: 0.8;
+}
+
+.typing-indicator {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.5rem 0;
+}
+
+.typing-indicator span {
+  width: 0.5rem;
+  height: 0.5rem;
+  background-color: #107069;
+  border-radius: 50%;
+  animation: typing 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes typing {
+  0%, 80%, 100% { 
+    transform: scale(0);
+    opacity: 0.3;
+  } 
+  40% { 
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 .composer {
   margin-top: 1rem;
   background: white; 
