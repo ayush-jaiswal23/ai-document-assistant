@@ -13,6 +13,7 @@ frontend/dist/
 
 backend/chroma/
 backend/media/
+backend/staticfiles/
 .DS_Store
 Thumbs.db
 
