@@ -32,7 +32,6 @@ services:
   - type: web
     name: ai-document-assistant-web
     runtime: static
-    plan: free
     branch: testing
     autoDeploy: true
     buildCommand: cd frontend && npm ci && npm run build
