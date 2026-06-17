@@ -1,19 +1,13 @@
 from django.urls import path
-
-from .views import (
-    AdminSignupView,
-    GroupChatView,
-    GroupDetailView,
-    GroupDocumentUploadView,
-    GroupListView,
-    LoginView,
-    LogoutView,
-    MemberCreateView,
-    ProfileView,
-    RefreshView,
-)
+from .views.auth import AdminSignupView, LoginView, RefreshView, LogoutView
+from .views.health import health_check
+from .views.workspace import ProfileView, GroupListView, GroupDetailView
+from .views.documents import GroupDocumentUploadView
+from .views.chat import GroupChatView
+from .views.members import MemberCreateView
 
 urlpatterns = [
+    path('api/health/', health_check, name='health_check'),
     path('api/auth/signup/', AdminSignupView.as_view(), name='signup'),
     path('api/auth/login/', LoginView.as_view(), name='login'),
     path('api/auth/refresh/', RefreshView.as_view(), name='token_refresh'),

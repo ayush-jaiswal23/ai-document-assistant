@@ -52,25 +52,27 @@ function createSeededDemoDb() {
       { userId: 'user-member', groupId: 'grp-policy', role: 'member' },
     ],
     documents: {
-      'grp-ops': {
-        id: 'doc-ops',
-        title: 'Support Escalation Handbook',
-        summary:
-          'Covers severity tiers, required response times, and the escalation ladder for blocked incidents.',
-        fileName: 'support-handbook.md',
-        content:
-          'Severity 1 incidents require an acknowledgement within 15 minutes and escalation to the incident commander immediately. Severity 2 incidents require acknowledgement within 30 minutes and team lead notification. Billing issues are routed to the finance queue within one business day. Product bugs should include reproduction steps, customer impact, and account id.',
-        description: 'Operations support runbook uploaded by the workspace admin.',
-        updatedAt: '2026-03-20T10:30:00.000Z',
-        indexedAt: '2026-03-20T10:31:00.000Z',
-        uploadedBy: 'Avery Admin',
-        embeddingModel: 'models/gemini-embedding-001',
-        vectorStoreBackend: 'chroma',
-        chunkCount: 4,
-        indexingStatus: 'indexed',
-        indexingError: '',
-      },
-      'grp-policy': null,
+      'grp-ops': [
+        {
+          id: 'doc-ops',
+          title: 'Support Escalation Handbook',
+          summary:
+            'Covers severity tiers, required response times, and the escalation ladder for blocked incidents.',
+          fileName: 'support-handbook.md',
+          content:
+            'Severity 1 incidents require an acknowledgement within 15 minutes and escalation to the incident commander immediately. Severity 2 incidents require acknowledgement within 30 minutes and team lead notification. Billing issues are routed to the finance queue within one business day. Product bugs should include reproduction steps, customer impact, and account id.',
+          description: 'Operations support runbook uploaded by the workspace admin.',
+          updatedAt: '2026-03-20T10:30:00.000Z',
+          indexedAt: '2026-03-20T10:31:00.000Z',
+          uploadedBy: 'Avery Admin',
+          embeddingModel: 'models/gemini-embedding-001',
+          vectorStoreBackend: 'chroma',
+          chunkCount: 4,
+          indexingStatus: 'indexed',
+          indexingError: '',
+        },
+      ],
+      'grp-policy': [],
     },
     messages: {
       'grp-ops': [
@@ -154,6 +156,12 @@ function getDemoUserByToken(token) {
   return { db, user }
 }
 
+function normalizeDocuments(value) {
+  if (Array.isArray(value)) return value
+  if (value) return [value]
+  return []
+}
+
 function buildWorkspace(db, user) {
   const profile = {
     id: user.id,
@@ -170,17 +178,19 @@ function buildWorkspace(db, user) {
     .filter((membership) => membership.userId === user.id)
     .map((membership) => {
       const group = db.groups.find((entry) => entry.id === membership.groupId)
-      const document = db.documents[membership.groupId]
+      const documents = normalizeDocuments(db.documents[membership.groupId])
+      const latestDocument = documents[0] ?? null
 
       return {
         id: group.id,
         name: group.name,
         description: group.description,
         role: membership.role,
-        hasDocument: Boolean(document),
-        documentTitle: document?.title ?? '',
-        documentStatus: document?.indexingStatus ?? 'pending',
-        updatedAt: document?.updatedAt ?? null,
+        hasDocument: documents.length > 0,
+        documentCount: documents.length,
+        documentTitle: latestDocument?.title ?? '',
+        documentStatus: latestDocument?.indexingStatus ?? 'pending',
+        updatedAt: latestDocument?.updatedAt ?? null,
       }
     })
 
@@ -207,15 +217,18 @@ function chunkContent(content) {
     .filter(Boolean)
 }
 
-function generateDocumentAnswer(message, document) {
+function generateDocumentAnswer(message, documents) {
   const prompt = message.toLowerCase()
-  const chunks = chunkContent(document.content)
+  const sourceDocuments = normalizeDocuments(documents)
+  const searchableChunks = sourceDocuments.flatMap((document) =>
+    chunkContent(document.content).map((chunk) => ({ chunk, document })),
+  )
   const relevantChunk =
-    chunks.find((chunk) =>
+    searchableChunks.find(({ chunk }) =>
       prompt.split(/\s+/).some((term) => term.length > 3 && chunk.toLowerCase().includes(term)),
-    ) ?? chunks[0]
+    ) ?? searchableChunks[0]
 
-  return `According to "${document.title}", ${relevantChunk}.`
+  return `According to "${relevantChunk.document.title}", ${relevantChunk.chunk}.`
 }
 
 async function request(path, options = {}) {
@@ -233,11 +246,21 @@ async function request(path, options = {}) {
   }
 
   if (!response.ok) {
-    const message =
-      payload?.detail ??
-      payload?.message ??
-      `Request failed with status ${response.status}.`
-    throw new Error(message)
+    let message = payload?.detail ?? payload?.message
+
+    // Handle structured validation errors (e.g., { password: ["too short", "too common"] })
+    if (!message && payload && typeof payload === 'object') {
+      const issues = Object.entries(payload).map(([field, errors]) => {
+        const label = field === 'non_field_errors' ? '' : `${field}: `
+        const errorText = Array.isArray(errors) ? errors.join(' ') : String(errors)
+        return `${label}${errorText}`
+      })
+      if (issues.length > 0) {
+        message = issues.join(' | ')
+      }
+    }
+
+    throw new Error(message ?? `Request failed with status ${response.status}.`)
   }
 
   return payload
@@ -279,17 +302,32 @@ function mapProfile(profile) {
   }
 }
 
+function mapAdminMember(member) {
+  return {
+    id: member.id,
+    fullName: member.full_name ?? member.fullName ?? '',
+    email: member.email ?? '',
+    memberId: member.member_id ?? member.memberId ?? '',
+    role: member.role ?? 'member',
+    title: member.title ?? '',
+    bio: member.bio ?? '',
+    groups: member.groups ?? [],
+  }
+}
+
 function mapGroup(group) {
-  const document = group.document ?? null
+  const documents = (group.documents ?? (group.document ? [group.document] : [])).map(mapDocument)
+  const latestDocument = documents[0] ?? null
   return {
     id: group.id,
     name: group.name,
     description: group.description ?? '',
     role: group.role,
-    hasDocument: Boolean(document),
-    documentTitle: document?.title ?? '',
-    documentStatus: document?.indexing_status ?? document?.indexingStatus ?? 'pending',
-    updatedAt: document?.updated_at ?? document?.updatedAt ?? null,
+    hasDocument: documents.length > 0,
+    documentCount: documents.length,
+    documentTitle: latestDocument?.title ?? '',
+    documentStatus: latestDocument?.indexingStatus ?? 'pending',
+    updatedAt: latestDocument?.updatedAt ?? null,
   }
 }
 
@@ -349,233 +387,6 @@ async function refreshAccessToken() {
   return nextSession
 }
 
-const demoApi = {
-  async signup(data) {
-    const db = readDemoDb()
-    const existingUser = db.users.find(
-      (entry) => entry.email.toLowerCase() === data.email.toLowerCase(),
-    )
-
-    if (existingUser) {
-      throw new Error('An account with this email already exists.')
-    }
-
-    const groupId = `grp-${Date.now()}`
-    const user = {
-      id: `user-${Date.now()}`,
-      fullName: data.fullName,
-      email: data.email,
-      memberId: null,
-      role: 'admin',
-      companyName: data.companyName,
-      password: data.password,
-      title: 'Workspace Admin',
-      bio: `Admin account for ${data.companyName}.`,
-    }
-
-    db.users.push(user)
-    db.groups.push({
-      id: groupId,
-      name: `${data.companyName} Workspace`,
-      description: `Primary document workspace for ${data.companyName}.`,
-    })
-    db.memberships.push({ userId: user.id, groupId, role: 'admin' })
-    db.messages[groupId] = []
-    db.documents[groupId] = null
-    writeDemoDb(db)
-
-    return createSession(user)
-  },
-
-  async login(credentials) {
-    const db = readDemoDb()
-    const user = db.users.find(
-      (entry) =>
-        [entry.email.toLowerCase(), entry.memberId?.toLowerCase()].includes(
-          credentials.identifier.toLowerCase(),
-        ) &&
-        entry.password === credentials.password,
-    )
-
-    if (!user) {
-      throw new Error('Invalid demo credentials.')
-    }
-
-    return createSession(user)
-  },
-
-  async fetchWorkspace(token) {
-    const { db, user } = getDemoUserByToken(token)
-    return buildWorkspace(db, user)
-  },
-
-  async fetchGroupContext(token, groupId) {
-    const { db, user } = getDemoUserByToken(token)
-    requireGroupMembership(db, user.id, groupId)
-
-    return {
-      document: db.documents[groupId]
-        ? {
-            ...db.documents[groupId],
-          }
-        : null,
-      messages: (db.messages[groupId] ?? []).map((message) => ({ ...message })),
-    }
-  },
-
-  async updateProfile(token, payload) {
-    const { db, user } = getDemoUserByToken(token)
-    const targetUser = db.users.find((entry) => entry.id === user.id)
-
-    targetUser.fullName = payload.fullName
-    targetUser.title = payload.title
-    targetUser.bio = payload.bio
-    writeDemoDb(db)
-
-    return {
-      id: targetUser.id,
-      fullName: targetUser.fullName,
-      email: targetUser.email,
-      memberId: targetUser.memberId ?? '',
-      role: targetUser.role,
-      title: targetUser.title,
-      bio: targetUser.bio,
-    }
-  },
-
-  async createMember(token, payload) {
-    const { db, user } = getDemoUserByToken(token)
-    if (user.role !== 'admin') {
-      throw new Error('Only admins can create members.')
-    }
-
-    const groupIds = payload.groupIds ?? []
-    const allowedGroups = db.memberships
-      .filter((entry) => entry.userId === user.id && entry.role === 'admin')
-      .map((entry) => entry.groupId)
-
-    if (!groupIds.length || !groupIds.every((groupId) => allowedGroups.includes(groupId))) {
-      throw new Error('Choose only groups you administer.')
-    }
-
-    const existingUser = db.users.find(
-      (entry) => entry.email.toLowerCase() === payload.email.toLowerCase(),
-    )
-    if (existingUser) {
-      throw new Error('An account with this email already exists.')
-    }
-
-    const memberId = `MEM-${payload.fullName.replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase() || 'MEMBER'}-${String(db.users.length + 1).padStart(4, '0')}`
-    const newUser = {
-      id: `user-${Date.now()}`,
-      fullName: payload.fullName,
-      email: payload.email,
-      memberId,
-      role: 'member',
-      password: payload.password,
-      title: payload.title || 'Member',
-      bio: payload.bio || '',
-    }
-
-    db.users.push(newUser)
-    groupIds.forEach((groupId) => {
-      db.memberships.push({ userId: newUser.id, groupId, role: 'member' })
-    })
-    writeDemoDb(db)
-
-    return {
-      id: newUser.id,
-      fullName: newUser.fullName,
-      email: newUser.email,
-      memberId: newUser.memberId,
-      role: newUser.role,
-      title: newUser.title,
-      bio: newUser.bio,
-    }
-  },
-
-  async uploadDocument(token, groupId, payload) {
-    const { db, user } = getDemoUserByToken(token)
-    const { membership } = requireGroupMembership(db, user.id, groupId)
-
-    if (membership.role !== 'admin') {
-      throw new Error('Only group admins can upload documents.')
-    }
-
-    const text = await payload.file.text()
-    const content = text.trim() || `${payload.title || payload.file.name} uploaded without preview text.`
-    const document = {
-      id: `doc-${Date.now()}`,
-      title: payload.title || payload.file.name,
-      description: payload.description || '',
-      summary:
-        payload.description ||
-        content.slice(0, 180) + (content.length > 180 ? '...' : ''),
-      fileName: payload.file.name,
-      content,
-      updatedAt: new Date().toISOString(),
-      indexedAt: new Date().toISOString(),
-      uploadedBy: user.fullName,
-      embeddingModel: 'models/gemini-embedding-001',
-      vectorStoreBackend: 'chroma',
-      chunkCount: Math.max(1, Math.ceil(content.length / 240)),
-      indexingStatus: 'indexed',
-      indexingError: '',
-    }
-
-    db.documents[groupId] = document
-    if (!db.messages[groupId]?.length) {
-      db.messages[groupId] = [
-        {
-          id: `message-${Date.now()}`,
-          role: 'assistant',
-          content: `The group document "${document.title}" is now available. Ask questions that stay within this source.`,
-          createdAt: new Date().toISOString(),
-        },
-      ]
-    }
-    writeDemoDb(db)
-
-    return {
-      document,
-      messages: db.messages[groupId].map((message) => ({ ...message })),
-    }
-  },
-
-  async sendMessage(token, groupId, message) {
-    const { db, user } = getDemoUserByToken(token)
-    requireGroupMembership(db, user.id, groupId)
-
-    const document = db.documents[groupId]
-    if (!document) {
-      throw new Error('A group admin must upload a document before chat is available.')
-    }
-
-    const reply = {
-      id: `assistant-${Date.now()}`,
-      role: 'assistant',
-      content: generateDocumentAnswer(message, document),
-      createdAt: new Date().toISOString(),
-    }
-
-    db.messages[groupId] = [
-      ...(db.messages[groupId] ?? []),
-      {
-        id: `user-${Date.now()}`,
-        role: 'user',
-        content: message,
-        createdAt: new Date().toISOString(),
-      },
-      reply,
-    ]
-    writeDemoDb(db)
-
-    return {
-      message: reply,
-      document,
-    }
-  },
-}
 
 const backendApi = {
   async login(credentials) {
@@ -644,6 +455,16 @@ const backendApi = {
     }
   },
 
+  async fetchMembers(token) {
+    const payload = await request('/api/members/', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    return payload.map(mapAdminMember)
+  },
+
   async fetchGroupContext(token, groupId) {
     const payload = await request(`/api/groups/${groupId}/`, {
       headers: {
@@ -652,7 +473,7 @@ const backendApi = {
     })
 
     return {
-      document: mapDocument(payload.document),
+      documents: (payload.documents ?? (payload.document ? [payload.document] : [])).map(mapDocument),
       messages: (payload.messages ?? []).map(mapMessage),
     }
   },
@@ -698,7 +519,9 @@ const backendApi = {
     const formData = new FormData()
     formData.append('title', payload.title)
     formData.append('description', payload.description)
-    formData.append('file', payload.file)
+    payload.files.forEach((file) => {
+      formData.append('files', file)
+    })
 
     const response = await request(`/api/groups/${groupId}/documents/upload/`, {
       method: 'POST',
@@ -710,6 +533,9 @@ const backendApi = {
 
     return {
       document: mapDocument(response.document),
+      uploadedDocuments: (response.uploaded_documents ?? []).map(mapDocument),
+      documents: (response.documents ?? (response.document ? [response.document] : [])).map(mapDocument),
+      uploadErrors: response.upload_errors ?? [],
       messages: (response.messages ?? []).map(mapMessage),
     }
   },
@@ -729,9 +555,9 @@ const backendApi = {
 
     return {
       message: mapMessage(payload.message ?? payload),
-      document: mapDocument(payload.document),
+      documents: (payload.documents ?? (payload.document ? [payload.document] : [])).map(mapDocument),
     }
   },
 }
 
-export const api = API_MODE === 'backend' ? backendApi : demoApi
+export const api  = backendApi
