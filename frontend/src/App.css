@@ -715,6 +715,31 @@
 }
 
 @media (max-width: 720px) {
+  .workspace-panel {
+    order: 1;
+  }
+
+  .hero-panel {
+    order: 2;
+  }
+
+  .auth-layout {
+    order: 1;
+  }
+
+  .topbar {
+    order: 2;
+  }
+
+  .notice-banner {
+    order: 3;
+  }
+
+  .chat-layout,
+  .profile-layout {
+    order: 4;
+  }
+
   .topbar,
   .switcher-panel,
   .composer-footer,
